@@ -1,6 +1,8 @@
 # Apple_Chess_Zero
 Implements part of Alpha Zero's algorithm for training good player in Reversi (Apple Chess)
 -------------------------------------------------------------------------------------------
+IMPORTANT: This code will not actually run here since the files are too large to upload.
+-------------------------------------------------------------------------------------------
 apple_chess.py:   Implements the Reversi (Apple_chess) game class and the alpha-beta pruning algorithm
 
 self_play.py:     Loads the current best model (neural network) to play against itself to generate data (a pair of data = (the board state,                   the winner of the game)) for training
