@@ -7,7 +7,7 @@ self_play.py:     Loads the current best model (neural network) to play against 
 
 training.py:      Trains the current model using the data from self_play.py. The neural network takes the board state as input the outputs                   a prediction of the outcome of the game (would black or white win)
 
-compare_model.py: After a certain amount of training by training.py, takes the newly trained model and make it fight against the current                     best model. If it wins with a winrate larger than 60%, it becomes the new best model for self_play.py
+compare_models.py: After a certain amount of training by training.py, takes the newly trained model and make it fight against the current                     best model. If it wins with a winrate larger than 60%, it becomes the new best model for self_play.py
 
 model_path_management.py: Manages the paths to save and load training data, models, and training results
 
