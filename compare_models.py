@@ -35,11 +35,11 @@ def compete_with_best_model():
         else:
             models_elo_rating = [100]
             best_models_elo_rating = [100]
-        try:
-            assert len(models_elo_rating) + 1 == get_last_model_index(model_path) + 1
-            assert len(best_models_elo_rating) == get_last_model_index(best_model_path) + 1
-        except AssertionError as e:
-            print(e, flush=True)
+#         try:
+#             assert len(models_elo_rating) + 1 == get_last_model_index(model_path) + 1
+#             assert len(best_models_elo_rating) == get_last_model_index(best_model_path) + 1
+#         except AssertionError as e:
+#             print(e, flush=True)
         if os.path.exists(get_last_model_dir(model_path)):
             compete_model = K.models.load_model(get_last_model_dir(model_path))
             print(name, "Compete model {} version {} loaded!".format(MODEL_NAME, get_last_model_index(model_path)))
