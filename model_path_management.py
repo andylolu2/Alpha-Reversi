@@ -1,6 +1,6 @@
 import os
 
-MODEL_NAME = "Trial8"
+MODEL_NAME = "Trial0"
 model_path = "models\\{}\\{}_{}.tf"
 best_model_path = "best_models\\{}\\{}_{}.tf"
 model_elo_rating_path = "model_elo_rating\\{}\\{}.npz"
