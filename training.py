@@ -1,3 +1,4 @@
+from constants import BATCH_SIZE, COMPETE_MODEL_EVERY, C_L2, EPOCHS, LEARNING_RATE, LOAD_DATA_EVERY, MIN_DATASET_SIZE, MOMENTUM, NO_OF_TRAININGS, SAVE_MODEL_EVERY, TRAINING_SAMPLE_SIZE
 from model_path_management import *
 from compare_models import compete_with_best_model
 import tensorflow as tf
@@ -8,24 +9,36 @@ import time
 from datetime import datetime
 import multiprocessing as mp
 
+def load_data():
+    try:
+        training_data = np.load(training_data_dir_0)
+        return (training_data["state"], training_data["policy"], training_data["value"])
+    except Exception:
+        training_data = np.load(training_data_dir_1)
+        return (training_data["state"], training_data["policy"], training_data["value"])
+
+def loss(nn, state, policy_true, value_true, training):  # MSE + L2 loss
+    [policy_pred, value_pred] = nn(state, training=training)
+    weights = nn.trainable_variables
+    loss_mse = tf.keras.losses.MeanSquaredError()
+    loss = loss_mse(y_true=value_true, y_pred=value_pred) - \
+            tf.nn.softmax_cross_entropy_with_logits(labels=policy_true, logits=policy_pred) + \
+            tf.math.add_n([tf.nn.l2_loss(v) for v in weights if 'bias' not in v.name]) * C_L2
+    return loss
+
+
+def train(nn, state, policy_true, value_true):
+    with tf.GradientTape() as g:
+        loss_values = loss(nn, state, policy_true, value_true, training=True)
+    return loss_values, g.gradient(loss_values, nn.trainable_variables)
+
 
 if __name__ == '__main__':
-    from tensorflow.compat.v1 import ConfigProto
-    from tensorflow.compat.v1 import InteractiveSession
-
-    config = ConfigProto()
+    config = tf.compat.v1.ConfigProto()
     config.gpu_options.allow_growth = True
-    session = InteractiveSession(config=config)
+    session = tf.compat.v1.InteractiveSession(config=config)
 
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-    NO_OF_TRAININGS = 10_000
-    SAVE_EVERY = 50
-    LOAD_DATA_EVERY = 25
-    LEARNING_RATE = 1e-4
-    BATCH_SIZE = 32
-    C_L2 = 1e-4
-    EPOCHS = 1
 
     training_data_dir_0 = training_data_dir + "_0.npz"
     training_data_dir_1 = training_data_dir + "_1.npz"
@@ -35,26 +48,7 @@ if __name__ == '__main__':
         model = K.models.load_model(get_last_model_dir(model_path))
         print("{} loaded!".format(MODEL_NAME))
     else:
-        print("model doesn't exist")
-        exit()
-
-    optimizer = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE, momentum=0.9)
-    loss_mse = tf.keras.losses.MeanSquaredError()
-
-
-    def loss(nn, x_, y_true, training):  # MSE + L2 loss
-        y_pred = nn(x_, training=training)
-        weights = nn.trainable_variables
-        loss = loss_mse(y_true=y_true, y_pred=y_pred) + \
-               tf.math.add_n([tf.nn.l2_loss(v) for v in weights if 'bias' not in v.name]) * C_L2
-        return loss, y_pred
-
-
-    def train(nn, x, y):
-        with tf.GradientTape() as g:
-            loss_values, y_pred = loss(nn, x, y, training=True)
-        return loss_values, g.gradient(loss_values, nn.trainable_variables), y_pred
-
+        raise FileNotFoundError("model doesn't exist")
 
     if os.path.exists(training_results_dir):
         training_results = np.load(training_results_dir)
@@ -69,80 +63,62 @@ if __name__ == '__main__':
                  mse=np.array(train_mse_results, dtype=np.float32))
         print("No previous training results. Creating new.")
 
-    training_data = None
+    optimizer = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE, momentum=MOMENTUM)
+    data_state = data_policy = data_value = []
     pool = mp.Pool(processes=1, maxtasksperchild=1)
+
     # choose data for fitting
     for TRAIN_INDEX in range(NO_OF_TRAININGS):
         if TRAIN_INDEX % LOAD_DATA_EVERY == 0:
-            try:
-                training_data = np.load(training_data_dir_0)
-                x_train = training_data["x_train"]
-                y_train = training_data["y_train"]
-                print("There are {} data for training".format(len(x_train)))
-            except:
-                training_data = np.load(training_data_dir_1)
-                x_train = training_data["x_train"]
-                y_train = training_data["y_train"]
-                print("There are {} data for training".format(len(x_train)))
-            assert len(x_train) == len(y_train)
-        if len(x_train) > 2048 * 4:
-            random_indices = np.random.choice(len(x_train), 4096, replace=False)
-            selected_x = x_train[random_indices]
-            selected_y = y_train[random_indices]
+            data_state, data_policy, data_value = load_data()
+            print(f"There are {len(data_state)} data for training")
+            assert len(data_state) == len(data_policy) == len(data_value), "Length of training data does not match"
 
-            training_dataset = tf.data.Dataset.from_tensor_slices((selected_x, selected_y))
+        if len(data_state) > MIN_DATASET_SIZE:
+            random_indices = np.random.choice(len(data_state), TRAINING_SAMPLE_SIZE, replace=False)
+            selected_state = data_state[random_indices]
+            selected_policy = data_policy[random_indices]
+            selected_value = data_value[random_indices]
+
+            training_dataset = tf.data.Dataset.from_tensor_slices((selected_state, selected_policy, selected_value))
             training_dataset = training_dataset.batch(BATCH_SIZE)
 
             # train
             for epoch in range(EPOCHS):
                 start = datetime.now()
                 epoch_loss_avg = tf.keras.metrics.Mean()
-                epoch_mse = tf.keras.metrics.MeanSquaredError()
 
-                # Training loop - using batches of 32
-                for x, y in training_dataset:
+                # Training loop - using batches of BATCH_SIZE
+                for state, policy, value in training_dataset:
                     # Optimize the model
-                    loss_value, grads, y_pred = train(model, x, y)
+                    loss_value, grads = train(model, state, policy, value)
                     optimizer.apply_gradients(zip(grads, model.trainable_variables))
                     # Track progress
                     epoch_loss_avg.update_state(loss_value)  # Add current batch loss
-                    epoch_mse.update_state(y, y_pred)
 
                 # End epoch
                 train_loss_results.append(epoch_loss_avg.result().numpy())
-                train_mse_results.append(epoch_mse.result().numpy())
-                time_taken = datetime.now() - start
-                if epoch % 1 == 0:
-                    print("Train: {}, Epoch: {}, Loss: {:.6f}, MSE: {:.6f}, Time: {}".format(TRAIN_INDEX,
-                                                                                             epoch,
-                                                                                             epoch_loss_avg.result(),
-                                                                                             epoch_mse.result(),
-                                                                                             time_taken))
+                print(f"Train: {TRAIN_INDEX}, Epoch: {epoch}, Loss: {epoch_loss_avg.result():.6f}, \
+                    Time: {datetime.now() - start}")
+   
 
-            if TRAIN_INDEX % SAVE_EVERY == 0:
+            if TRAIN_INDEX % SAVE_MODEL_EVERY == 0:
                 try:
-                    model.save(get_next_model_dir(model_path), save_format="tf")
-                except:
+                    model.save(get_last_model_dir(model_path), save_format="tf")
+                except Exception:
                     time.sleep(5)
-                    model.save(get_next_model_dir(model_path), save_format="tf")
+                    model.save(get_last_model_dir(model_path), save_format="tf")
                 print("Model saved")
                 np.savez(training_results_dir,
-                         loss=np.array(train_loss_results, dtype=np.float32),
-                         mse=np.array(train_mse_results, dtype=np.float32))
+                         loss=np.array(train_loss_results, dtype=np.float32))
                 print("Training results saved")
+            
+            if TRAIN_INDEX % COMPETE_MODEL_EVERY == 0:
                 pool.apply_async(func=compete_with_best_model, args=())
         else:
-            print("Not enough data for training. There is only {} data.".format(len(x_train)))
+            print("Not enough data for training. There is only {} data.".format(len(data_state)))
             time.sleep(5)
-            try:
-                training_data = np.load(training_data_dir_0)
-                x_train = training_data["x_train"]
-                y_train = training_data["y_train"]
-                print("There are {} data for training".format(len(x_train)))
-            except:
-                training_data = np.load(training_data_dir_1)
-                x_train = training_data["x_train"]
-                y_train = training_data["y_train"]
-                print("There are {} data for training".format(len(x_train)))
+            data_state, data_policy, data_value = load_data()
+            print(f"There are {len(data_state)} data for training")
 
     print("completed!")

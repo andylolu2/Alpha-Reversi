@@ -1,126 +1,145 @@
+from constants import BOARD_DIM, HISTORY_LEN, MAX_TRAINING_SIZE, NO_OF_GAMES, NO_OF_RES_BLOCKS, SAVE_DATA_EVERY, UPDATE_MODEL_EVERY
 from apple_chess import Board
-from model_path_management import *
+from model_path_management import MODEL_NAME, best_model_path, get_last_model_dir, model_path, get_next_model_dir, training_data_dir
 import tensorflow as tf
-import tensorflow.keras as K
+from tensorflow import keras
 import numpy as np
 import os
+import pathlib
 from datetime import datetime
 import time
-from tensorflow.compat.v1 import ConfigProto
-from tensorflow.compat.v1 import InteractiveSession
+import multiprocessing
 
-config = ConfigProto()
+config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
-session = InteractiveSession(config=config)
+session = tf.compat.v1.InteractiveSession(config=config)
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-NO_OF_GAMES = 10_000
-SAVE_DATA_EVERY = 50
-UPDATE_MODEL_EVERY = 50
-MAX_TRAINING_SIZE = 500_000
+def conv_block(x):
+    x = keras.layers.Conv2D(filters=256, kernel_size=3, strides=1, padding="same")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Activation(tf.keras.activations.relu)(x)
+    return x
 
+def res_block(x):
+    _input = x
+    x = conv_block(x)
+    x = keras.layers.Conv2D(filters=256, kernel_size=3, strides=1, padding="same")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.add([x, _input])
+    x = keras.layers.Activation(tf.keras.activations.relu)(x)
+    return x
 
-def add_cov_block(nn):
-    nn.add(K.layers.Conv2D(filters=128, kernel_size=(3, 3), strides=(1, 1), padding="same"))
-    nn.add(K.layers.BatchNormalization())
-    nn.add(K.layers.Activation(tf.nn.relu))
+def policy_head(x):
+    x = keras.layers.Conv2D(filters=2, kernel_size=1, strides=1, padding="same")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Activation(tf.keras.activations.relu)(x)
+    x = keras.layers.Flatten()(x)
+    x = keras.layers.Dense(BOARD_DIM[0]*BOARD_DIM[1], name="policy")(x)
+    return x
 
+def value_head(x):
+    x = keras.layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Activation(tf.keras.activations.relu)(x)
+    x = keras.layers.Flatten()(x)
+    x = keras.layers.Dense(256)(x)
+    x = keras.layers.Activation(tf.keras.activations.relu)(x)
+    x = keras.layers.Dense(1)(x)
+    x = keras.layers.Activation(tf.keras.activations.tanh, name="value")(x)
+    return x
 
 def load_model(dir):
     try:
         print("{} loaded!".format(MODEL_NAME))
-        return K.models.load_model(dir)
-    except:
-        time.sleep(2)
+        return keras.models.load_model(dir)
+    except Exception:
+        time.sleep(3)
         print("{} loaded!".format(MODEL_NAME))
-        return K.models.load_model(dir)
+        return keras.models.load_model(dir)
 
 
 if os.path.exists(get_last_model_dir(best_model_path)):
     model = load_model(get_last_model_dir(best_model_path))
-elif os.path.exists(get_last_model_dir(model_path)):
-    print("Model created but cannot find best model")
-    exit()
 else:  # create model
-    model = K.Sequential()
-    model.add(K.layers.Conv2D(filters=256, kernel_size=(3, 3), strides=(1, 1), padding="same", input_shape=(8, 8, 2)))
-    model.add(K.layers.BatchNormalization())
-    model.add(K.layers.Activation(tf.nn.relu))
-    for i in range(10):
-        add_cov_block(model)
-    model.add(K.layers.Conv2D(filters=1, kernel_size=(1, 1), strides=1, padding="same"))
-    model.add(K.layers.BatchNormalization())
-    model.add(K.layers.Flatten())
-    model.add(K.layers.Dense(128))
-    model.add(K.layers.Activation(tf.nn.relu))
-    model.add(K.layers.Dense(1))
-    model.add(K.layers.Activation(tf.nn.tanh))
+    inputs = keras.Input(shape=BOARD_DIM+(HISTORY_LEN * 2 + 1,), name="state")
+    x = conv_block(inputs)
+    for _ in range(NO_OF_RES_BLOCKS):
+        x = res_block(x)
+    policy = policy_head(x)
+    value = value_head(x)
+    model = keras.Model(inputs=inputs, outputs=[policy, value], name="alpha_reversi")
     print("model created!")
-    model.save(get_next_model_dir(model_path))
-    model.save(get_next_model_dir(best_model_path))
 
+    # plot and save model
+    keras.utils.plot_model(model, "model_architecture.png", show_shapes=True, dpi=200)
+    compete_model_dir = pathlib.Path(get_next_model_dir(model_path))
+    best_model_dir = pathlib.Path(get_next_model_dir(best_model_path))
+    if not compete_model_dir.parent.is_dir():
+        compete_model_dir.parent.mkdir(parents=True)
+    if not best_model_dir.parent.is_dir():
+        best_model_dir.parent.mkdir(parents=True)
+    model.save(str(compete_model_dir))
+    model.save(str(best_model_dir))
 
-def value_func(board, nn):
-    value = np.mean(nn(np.array(board.as_nn_input()), training=False).numpy())
-    return value
-
-
-outcome = []
 
 if os.path.exists(training_data_dir + "_0.npz"):
-    training_data = np.load(training_data_dir + "_0.npz")
-    training_data_x = training_data["x_train"].tolist()
-    training_data_y = training_data["y_train"].tolist()
+    data = np.load(training_data_dir + "_0.npz")
+    data_state = data["state"].tolist()
+    data_policy = data["policy"].tolist()
+    data_value = data["value"].tolist()
 else:
-    training_data_x = []
-    training_data_y = []
+    data_state = []
+    data_policy = []
+    data_value = []
     print("Couldn't find training data. Creating new")
 
 for i in range(1, NO_OF_GAMES + 1):
     # create data
     start = datetime.now()
     B = Board(train_random=True)
-    temp_x_s = B.as_nn_input()
-
+    temp_states = []
+    temp_policies = []
     # play games
     while not B.is_terminal():
-        move = B.alpha_beta_value(value_func, model, 1, -1e2, 1e2, max_depth=1, epsilon=0.04)[1]
-        B.add(B.turn, move[0], move[1])
-        temp_x_s = temp_x_s + B.as_nn_input()
+        temp_states.append(B.as_nn_input()[0])
+
+        policy = B.mcts(model, iter=16)
+        temp_policies.append(policy)
+
+        move = B.get_mcts_move(policy)
+        B = B.traverse(move[0], move[1])
+        print(repr(B))
 
     winner = B.winner()
-    temp_y_s = [np.array([winner]) for _ in range(len(temp_x_s))]
-    training_data_x = training_data_x + temp_x_s
-    training_data_y = training_data_y + temp_y_s
+    temp_values = [[winner] for _ in range(len(temp_states))]
 
-    outcome.append(winner)
+    data_state += temp_states
+    data_policy += temp_policies
+    data_value += temp_values
 
-    if len(training_data_x) != len(training_data_y):
-        print("The length of x and y data don't match")
+    assert len(data_state) == len(data_policy) == len(data_value), "The length of data does not match"
 
     if i % SAVE_DATA_EVERY == 0:
-        if len(training_data_x) > MAX_TRAINING_SIZE:
-            training_data_x = training_data_x[-MAX_TRAINING_SIZE:]
-        if len(training_data_y) > MAX_TRAINING_SIZE:
-            training_data_y = training_data_y[-MAX_TRAINING_SIZE:]
+        if len(data_state) > MAX_TRAINING_SIZE:
+            data_state = data_state[-MAX_TRAINING_SIZE:]
+            data_policy = data_policy[-MAX_TRAINING_SIZE:]
+            data_value = data_value[-MAX_TRAINING_SIZE:]
         np.savez(training_data_dir + "_0",
-                 x_train=np.array(training_data_x, dtype=np.float32),
-                 y_train=np.array(training_data_y, dtype=np.float32))
-        print("{} saved.".format(training_data_dir + "_0"))
+            data_state = np.array(data_state, dtype=np.float32),
+            data_policy = np.array(data_policy, dtype=np.float32),
+            data_value = np.array(data_value, dtype=np.float32))
+        print(f"{training_data_dir}_0 saved.")
         np.savez(training_data_dir + "_1",
-                 x_train=np.array(training_data_x, dtype=np.float32),
-                 y_train=np.array(training_data_y, dtype=np.float32))
-        print("{} saved.".format(training_data_dir + "_1"))
+            data_state = np.array(data_state, dtype=np.float32),
+            data_policy = np.array(data_policy, dtype=np.float32),
+            data_value = np.array(data_value, dtype=np.float32))
+        print(f"{training_data_dir}_1 saved.")
 
     if i % UPDATE_MODEL_EVERY == 0:
         model = load_model(get_last_model_dir(best_model_path))
 
-    time_taken = datetime.now() - start
-    print("Winner: {:+}, Game length: {}, Game no: {}, Run time: {}".format(winner,
-                                                                            int(len(temp_x_s) / 4),
-                                                                            i,
-                                                                            time_taken))
+    print(f"Winner: {winner:+}, Game length: {len(temp_states)}, Game no: {i}, Run time: {datetime.now() - start}")
 
 print("completed!")
-print("Outcomes: {}".format(outcome))
