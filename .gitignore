@@ -14,7 +14,6 @@ models/*
 models/Trial6/*
 !models/Trial6/Trial6_635.tf
 training_data/*
-!training_data/Trial6*
 training_results/*
 !training_results/Trial6.npz
 model_elo_rating/*
