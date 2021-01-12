@@ -1,4 +1,4 @@
-# Apple_Chess_Zero
+# Aphla Reversi
 This model implements the [Alpha Zero paper](https://www.gwern.net/docs/rl/2017-silver.pdf) on the game of Reversi/Orthello. 
 
 The overall algorithm is divided into three parts:
